@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
-    <title>TX Battery Manufacturing ERP | Complete Production System</title>
+    <title>MES - Tubular Battery Plant | Manufacturing Execution System</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <style>
@@ -32,6 +32,13 @@
         .molding-common { background: #dcfce7; border: 1px solid #10b981; border-radius: 12px; padding: 12px; }
         @media (max-width: 768px) { .chart-wrapper { height: 220px; } }
         .cloud-badge { background: #10b981; color: white; padding: 4px 12px; border-radius: 20px; font-size: 11px; display: inline-block; }
+        /* New Alert Styles */
+        .alert-critical { background: #fef2f2; border-left: 4px solid #ef4444; padding: 12px; margin-bottom: 10px; border-radius: 8px; }
+        .alert-warning { background: #fffbeb; border-left: 4px solid #f59e0b; padding: 12px; margin-bottom: 10px; border-radius: 8px; }
+        .alert-title { font-weight: bold; font-size: 14px; margin-bottom: 8px; }
+        .alert-badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: bold; margin-left: 8px; }
+        .alert-critical .alert-badge { background: #ef4444; color: white; }
+        .alert-warning .alert-badge { background: #f59e0b; color: white; }
     </style>
 </head>
 <body>
@@ -313,6 +320,46 @@
         }
     }
 
+    // ==================== NEW: CRITICAL INVENTORY ALERTS FUNCTION ====================
+    function getCriticalInventoryAlerts() {
+        const alerts = [];
+        const req = calculateMaterialRequirements(dailySchedule.tx1800, dailySchedule.tx2500);
+        
+        for (let [key, material] of Object.entries(MATERIALS)) {
+            const currentStock = inventoryLevels[key]?.currentStock || material.currentStock;
+            const required = req[key] || 0;
+            const adaptiveSafetyStock = calculateAdaptiveSafetyStock(key);
+            const dynamicLeadTime = getDynamicLeadTime(key);
+            const reorderPoint = (material.avgDailyDemand * dynamicLeadTime) + adaptiveSafetyStock;
+            
+            // Critical: Stock below reorder point
+            if (currentStock < reorderPoint) {
+                alerts.push({
+                    type: 'critical',
+                    material: material.name,
+                    currentStock: currentStock,
+                    reorderPoint: reorderPoint,
+                    required: required,
+                    unit: material.unit,
+                    key: key
+                });
+            }
+            // Warning: Stock less than 20% above reorder point
+            else if (currentStock < reorderPoint * 1.2) {
+                alerts.push({
+                    type: 'warning',
+                    material: material.name,
+                    currentStock: currentStock,
+                    reorderPoint: reorderPoint,
+                    required: required,
+                    unit: material.unit,
+                    key: key
+                });
+            }
+        }
+        return alerts;
+    }
+
     // ==================== SUPABASE FUNCTIONS ====================
     async function loadFromCloud() {
         try {
@@ -331,7 +378,6 @@
         } catch (error) {
             console.log('Cloud load failed, using local data');
         }
-        // If cloud fails or has no data, use local data
         const savedEntries = localStorage.getItem('tx_entries');
         if (savedEntries && productionData.length === 0) {
             productionData = JSON.parse(savedEntries);
@@ -397,7 +443,6 @@
         
         productionData.unshift(newEntry);
         
-        // Try to save to cloud, if fails local is already saved
         const cloudEntry = {
             date: today,
             department: formDept,
@@ -427,7 +472,7 @@
         render();
     }
 
-    // ==================== BOM CALCULATIONS (REST OF YOUR ORIGINAL CODE) ====================
+    // ==================== BOM CALCULATIONS ====================
     function calculateDailyTarget(dept, s1800, s2500) {
         if (dept === 'Ball Milling') return (s1800 * 12.174) + (s2500 * 17.106);
         if (dept === 'Tubular Grid' || dept === 'Oxide Filling' || dept === 'Acid Pickling') return (s1800 * 12) + (s2500 * 18);
@@ -612,7 +657,26 @@
         const timeStr = currentTime.toLocaleTimeString();
         const dateStr = currentTime.toLocaleDateString();
         
-        return `<div class="flex justify-between items-center mb-3"><div><h2 class="font-bold">Dashboard</h2><p class="text-xs text-slate-500">Production Control Center</p></div><div class="flex gap-2"><button onclick="endDay()" class="end-day-btn">📅 End Day</button><button onclick="resetSystem()" class="reset-btn">🧹 Clear Sample Data</button><span class="cloud-badge">☁️ Cloud Backup</span></div></div>
+        // Get inventory alerts
+        const alerts = getCriticalInventoryAlerts();
+        let alertsHtml = '';
+        if (alerts.length > 0) {
+            alertsHtml = `<div class="mb-4 p-3 bg-white rounded-xl shadow">
+                <div class="flex items-center gap-2 mb-2"><span class="text-lg">⚠️</span><span class="font-bold">Inventory Alerts</span><span class="text-xs text-slate-500">(Action Required)</span></div>`;
+            for (let alert of alerts) {
+                const alertClass = alert.type === 'critical' ? 'alert-critical' : 'alert-warning';
+                alertsHtml += `<div class="${alertClass}">
+                    <div class="flex justify-between items-center flex-wrap">
+                        <div><span class="font-medium">${alert.material}</span><span class="alert-badge">${alert.type === 'critical' ? 'CRITICAL' : 'WARNING'}</span></div>
+                        <div class="text-sm">Stock: <strong>${Math.round(alert.currentStock)}</strong> / Reorder: <strong>${Math.round(alert.reorderPoint)}</strong> ${alert.unit}</div>
+                        <button onclick="placeOrder('${alert.key}')" class="mt-2 sm:mt-0 bg-amber-500 text-white px-3 py-1 rounded text-xs hover:bg-amber-600">📦 Place Order</button>
+                    </div>
+                </div>`;
+            }
+            alertsHtml += `</div>`;
+        }
+        
+        return `${alertsHtml}<div class="flex justify-between items-center mb-3"><div><h2 class="font-bold">Dashboard</h2><p class="text-xs text-slate-500">Production Control Center</p></div><div class="flex gap-2"><button onclick="endDay()" class="end-day-btn">📅 End Day</button><button onclick="resetSystem()" class="reset-btn">🧹 Clear Sample Data</button><span class="cloud-badge">☁️ Cloud Backup</span></div></div>
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5"><div class="kpi-card"><div class="text-xs">🏭 Plant OEE</div><div class="text-xl font-bold">78.5%</div></div>
         <div class="kpi-card"><div class="text-xs">📦 Production</div><div class="text-xl font-bold">${Math.round(rangeProduction/1000)}k</div><div class="text-xs">${dateRangeStart} to ${dateRangeEnd}</div></div>
         <div class="kpi-card"><div class="text-xs">🎯 TX-1800</div><div class="text-xl font-bold" id="scheduleDisplay1800">${dailySchedule.tx1800}</div></div>
@@ -762,7 +826,7 @@
             pendingHtml = `<div class="bg-white rounded-xl shadow p-4 mt-4"><h3 class="font-bold mb-3">📋 Pending Purchase Orders</h3>${pendingOrders.map(o => `<div class="order-card"><div class="flex justify-between"><span><strong>${MATERIALS[o.material]?.name || o.material}</strong></span><span class="text-xs">Ordered: ${o.orderDate}</span></div><div>Quantity: ${o.quantity} ${MATERIALS[o.material]?.unit || 'units'}</div><button onclick="receiveOrder('${o.id}')" class="bg-green-500 text-white px-2 py-1 rounded text-xs mt-1">✅ Mark Received</button></div>`).join('')}</div>`;
         }
         
-        let packingHtml = '<div class="bg-white rounded-xl shadow p-4 mt-4"><h3 class="font-bold mb-3">📦 Packing Materials Required</h3><div class="overflow-x-auto"><table class="w-full text-sm"><thead class="bg-slate-100"><tr><th class="p-2 text-left">Material</th><th class="p-2 text-right">Required</th><th class="p-2 text-left">Unit</th><th class="p-2 text-right">Opening Stock</th><th class="p-2 text-right">Closing Stock</th><th class="p-2 text-left">Status</th></tr></thead><tbody>';
+        let packingHtml = '<div class="bg-white rounded-xl shadow p-4 mt-4"><h3 class="font-bold mb-3">📦 Packing Materials Required</h3><div class="overflow-x-auto"><table class="w-full text-sm"><thead class="bg-slate-100"><tr><th class="p-2 text-left">Material</th><th class="p-2 text-right">Required</th><th class="p-2 text-left">Unit</th><th class="p-2 text-right">Opening Stock</th><th class="p-2 text-right">Closing Stock</th><th class="p-2 text-left">Status</th></td></thead><tbody>';
         for (let [key, material] of Object.entries(packingReqs)) {
             const currentStock = packingInventory[key]?.currentStock || material.currentStock;
             const closing = currentStock - material.required;
@@ -787,7 +851,7 @@
             else actual = e.actualQty || 0;
             rows += `<tr class="border-b"><td class="p-2 text-xs">${e.date}</td><td class="p-2 text-xs">${e.hourSlot}:00</span></td><td class="p-2 text-xs">${e.department.split(' ')[0]}</span></td><td class="p-2 text-xs">${e.shift}</span></td><td class="p-2 text-xs">${typeof actual === 'string' ? actual.substring(0,30) : actual}</span></td><td class="p-2"><span class="px-1 py-0.5 rounded-full text-xs ${e.machineStatus==='Running'?'bg-green-100 text-green-700':'bg-red-100 text-red-700'}">${e.machineStatus==='Running'?'✅':'⚠️'}</span></span></td></tr>`;
         }
-        return `<div class="bg-white rounded-xl shadow overflow-hidden"><div class="overflow-x-auto"><table class="w-full text-xs"><thead class="bg-slate-100"><tr><th class="p-2">Date</th><th class="p-2">Hour</th><th class="p-2">Dept</th><th class="p-2">Shift</th><th class="p-2">Actual</th><th class="p-2">Status</th></tr></thead><tbody>${rows}</tbody></table></div><div class="p-3 flex justify-between"><button onclick="changePage(-1)" ${currentPage===1?'disabled style="opacity:0.5"':''} class="px-3 py-1 border rounded text-sm">Prev</button><span class="text-sm">${currentPage} / ${totalPages}</span><button onclick="changePage(1)" ${currentPage===totalPages?'disabled style="opacity:0.5"':''} class="px-3 py-1 border rounded text-sm">Next</button></div></div>`;
+        return `<div class="bg-white rounded-xl shadow overflow-hidden"><div class="overflow-x-auto"><table class="w-full text-xs"><thead class="bg-slate-100"><tr><th class="p-2">Date</th><th class="p-2">Hour</th><th class="p-2">Dept</th><th class="p-2">Shift</th><th class="p-2">Actual</th><th class="p-2">Status</th></td></thead><tbody>${rows}</tbody></table></div><div class="p-3 flex justify-between"><button onclick="changePage(-1)" ${currentPage===1?'disabled style="opacity:0.5"':''} class="px-3 py-1 border rounded text-sm">Prev</button><span class="text-sm">${currentPage} / ${totalPages}</span><button onclick="changePage(1)" ${currentPage===totalPages?'disabled style="opacity:0.5"':''} class="px-3 py-1 border rounded text-sm">Next</button></div></div>`;
     }
 
     function renderMaintenance() {
@@ -857,7 +921,7 @@
         
         const scrollPos = document.querySelector('.flex-1.overflow-auto')?.scrollTop || 0;
         
-        app.innerHTML = `<div class="flex h-screen bg-slate-100"><div class="w-56 bg-slate-900 text-white flex flex-col"><div class="p-3 border-b"><h1 class="text-base font-bold">TX Battery Mfg</h1><p class="text-xs text-slate-400">Advanced Cloud ERP</p></div><nav class="flex-1 p-2 space-y-0.5"><button onclick="setView('dashboard')" class="nav-btn w-full text-left px-2 py-1.5 rounded text-sm ${currentView==='dashboard'?'bg-slate-800':''}">📊 Dashboard</button><button onclick="setView('production')" class="nav-btn w-full text-left px-2 py-1.5 rounded text-sm ${currentView==='production'?'bg-slate-800':''}">🏭 Production</button><button onclick="setView('analytics')" class="nav-btn w-full text-left px-2 py-1.5 rounded text-sm ${currentView==='analytics'?'bg-slate-800':''}">📈 Analytics</button><button onclick="setView('inventory')" class="nav-btn w-full text-left px-2 py-1.5 rounded text-sm ${currentView==='inventory'?'bg-slate-800':''}">📦 Inventory</button><button onclick="setView('history')" class="nav-btn w-full text-left px-2 py-1.5 rounded text-sm ${currentView==='history'?'bg-slate-800':''}">📋 History</button><button onclick="setView('maintenance')" class="nav-btn w-full text-left px-2 py-1.5 rounded text-sm ${currentView==='maintenance'?'bg-slate-800':''}">🔧 Maintenance</button></nav><div class="p-2 text-xs text-slate-500 border-t text-center">v13.0 | Cloud Database</div></div>
+        app.innerHTML = `<div class="flex h-screen bg-slate-100"><div class="w-56 bg-slate-900 text-white flex flex-col"><div class="p-3 border-b"><h1 class="text-base font-bold">MES - Tubular Battery Plant</h1><p class="text-xs text-slate-400">Manufacturing Execution System</p></div><nav class="flex-1 p-2 space-y-0.5"><button onclick="setView('dashboard')" class="nav-btn w-full text-left px-2 py-1.5 rounded text-sm ${currentView==='dashboard'?'bg-slate-800':''}">📊 Dashboard</button><button onclick="setView('production')" class="nav-btn w-full text-left px-2 py-1.5 rounded text-sm ${currentView==='production'?'bg-slate-800':''}">🏭 Production</button><button onclick="setView('analytics')" class="nav-btn w-full text-left px-2 py-1.5 rounded text-sm ${currentView==='analytics'?'bg-slate-800':''}">📈 Analytics</button><button onclick="setView('inventory')" class="nav-btn w-full text-left px-2 py-1.5 rounded text-sm ${currentView==='inventory'?'bg-slate-800':''}">📦 Inventory</button><button onclick="setView('history')" class="nav-btn w-full text-left px-2 py-1.5 rounded text-sm ${currentView==='history'?'bg-slate-800':''}">📋 History</button><button onclick="setView('maintenance')" class="nav-btn w-full text-left px-2 py-1.5 rounded text-sm ${currentView==='maintenance'?'bg-slate-800':''}">🔧 Maintenance</button></nav><div class="p-2 text-xs text-slate-500 border-t text-center">v13.0 | Cloud Database</div></div>
         <div class="flex-1 flex flex-col overflow-hidden"><div class="bg-white border-b px-4 py-2 flex justify-between"><div><h2 class="font-semibold text-sm">Production Control Center</h2><p class="text-xs text-slate-500">${currentShift}</p></div><div class="flex gap-4 items-center"><div class="text-right"><div class="text-xs">${dateStr}</div><div class="clock text-sm font-mono">${timeStr}</div></div><div class="px-2 py-0.5 rounded-full text-xs ${currentShift==='Shift A'?'bg-blue-100 text-blue-700':'bg-purple-100 text-purple-700'}">${currentShift}</div></div></div>
         <div class="flex-1 overflow-auto p-4">${message ? `<div class="fixed top-16 right-4 ${message.includes('✅')?'bg-green-100 text-green-700':'bg-red-100 text-red-700'} px-3 py-1.5 rounded shadow z-50 text-sm">${message}</div>` : ''}${content}</div></div></div>`;
         
